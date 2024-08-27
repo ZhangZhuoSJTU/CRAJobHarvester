@@ -237,14 +237,14 @@ def parse_job_details(title, details, max_attempts, model):
 
 
 def load_existing_jobs(csv_path):
-    existing_jobs = set()
+    existing_jobs = {}
     if os.path.exists(csv_path):
         with open(csv_path, 'r', newline='', encoding='utf-8') as csvfile:
             reader = csv.DictReader(csvfile)
             for row in reader:
-                # Only add to existing_jobs if parsing was successful
                 if row.get('Additional Comments') != "Failed to parse job details.":
-                    existing_jobs.add(row.get('CRA ID', ''))
+                    # Store the entire valid row, indexed by its title (or another unique field)
+                    existing_jobs[row.get('CRA ID', '')] = row
     return existing_jobs
 
 
@@ -262,8 +262,6 @@ def main():
         if len(jobs) == 0:
             print("Crawling failed. No job listings found. Please try again later.")
             raise Exception("No job listings found")
-
-        results = []
 
         for job in jobs:
             crawl_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -297,12 +295,12 @@ def main():
                 "CRA ID": title
             }
 
-            results.append(job_info)
+            existing_jobs[title] = job_info
             print(f"Scraped job: {title}")
 
         # Ensure all jobs have the same keys
-        all_keys = set().union(*(d.keys() for d in results))
-        for job in results:
+        all_keys = set().union(*(d.keys() for d in existing_jobs.values()))
+        for job in existing_jobs.values():
             for key in all_keys:
                 if key not in job:
                     job[key] = "N/A"
@@ -333,16 +331,14 @@ def main():
                 ordered_fieldnames.append(key)
 
        # Write results to CSV
-        mode = 'a' if os.path.exists(args.csv) else 'w'
-        with open(args.csv, mode, newline='', encoding='utf-8') as csvfile:
+        with open(args.csv, 'w', newline='', encoding='utf-8') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=ordered_fieldnames)
-            if mode == 'w':
-                writer.writeheader()
-            for job in results:
-                writer.writerow(job)
+            writer.writeheader()
+            for job_info in existing_jobs.values():
+                writer.writerow(job_info)
 
         print(
-            f"Scraped {len(results)} job listings. Results saved to cra_job_listings.csv")
+            f"Scraped {len(existing_jobs)} job listings. Results saved to cra_job_listings.csv")
 
     finally:
         driver.quit()

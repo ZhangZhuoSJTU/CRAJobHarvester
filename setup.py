@@ -8,7 +8,7 @@ setup(
     version="0.1.0",
     author="Zhuo Zhang",
     author_email="zhan3299@purdue.edu",
-    description="A tool to scrape and analyze job listings from the CRA website",
+    description="A tool to scrape and analyze job listings from CRA website",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/ZhangZhuoSJTU/CRAJobHarvester",

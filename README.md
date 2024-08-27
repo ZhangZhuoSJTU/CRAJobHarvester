@@ -45,7 +45,7 @@ python cra_job_crawler.py --csv output.csv --api_key your_openai_api_key --chrom
 
 - `--csv`: Path to the CSV file for output and duplicate checking (default: cra_job_listings.csv)
 - `--api_key`: Your OpenAI API key
-- `--model`: OpenAI model to use (choices: gpt-3.5-turbo, gpt-4; default: gpt-3.5-turbo)
+- `--model`: OpenAI model to use (choices: gpt-3.5-turbo, gpt-4, gpt-4o; default: gpt-3.5-turbo)
 - `--chromedriver`: Path to your ChromeDriver executable (required)
 - `--additional_links`: Number of additional links to process per job listing (default: 0)
 - `--max_attempts`: Maximum number of attempts for parsing job details (default: 3)
