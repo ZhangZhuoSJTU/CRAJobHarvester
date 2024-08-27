@@ -8,7 +8,6 @@ CRAJobHarvester is a Python-based tool designed to scrape and analyze job listin
 - Uses OpenAI's GPT models to parse and structure job details
 - Saves results in a CSV file
 - Avoids duplicate entries
-- Customizable through command-line arguments
 
 ## Prerequisites
 
