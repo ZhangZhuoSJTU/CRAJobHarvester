@@ -24,7 +24,7 @@ setup(
         "jsonschema>=4.23.0",
         "openai>=1.42.0",
         "requests>=2.32.3",
-        "selenium>=4.31.1",
+        "selenium>=4.23.1",
     ],
     entry_points={
         'console_scripts': [
