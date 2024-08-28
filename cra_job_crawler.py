@@ -116,16 +116,8 @@ def setup_driver(chromedriver_path):
     return webdriver.Chrome(service=service, options=chrome_options)
 
 
-def fetch_cra_jobs(driver):
-    """Fetch job listings from CRA website using Selenium."""
-    url = "https://cra.org/ads/"
-    driver.get(url)
-
-    # Wait for the job listings to load
-    WebDriverWait(driver, 20).until(
-        EC.presence_of_element_located((By.CLASS_NAME, "job_listings"))
-    )
-
+def fetch_page(driver):
+    """Fetch a page using Selenium."""
     # Scroll to load all job listings
     last_height = driver.execute_script("return document.body.scrollHeight")
     while True:
@@ -138,7 +130,19 @@ def fetch_cra_jobs(driver):
         last_height = new_height
 
     page_source = driver.page_source
-    soup = BeautifulSoup(page_source, 'html.parser')
+    return BeautifulSoup(page_source, 'html.parser')
+
+
+def fetch_cra_jobs(driver):
+    """Fetch job listings from CRA website using Selenium."""
+    url = "https://cra.org/ads/"
+    driver.get(url)
+
+    # Wait for the job listings to load
+    WebDriverWait(driver, 20).until(
+        EC.presence_of_element_located((By.CLASS_NAME, "job_listings"))
+    )
+    soup = fetch_page(driver)
     return soup.find_all('li', class_='job_listing')
 
 
@@ -161,8 +165,7 @@ def extract_job_details(driver, existing_jobs, job, num_additional_links, logger
     WebDriverWait(driver, 10).until(
         EC.presence_of_element_located((By.CLASS_NAME, "job_description"))
     )
-
-    soup = BeautifulSoup(driver.page_source, 'html.parser')
+    soup = fetch_page(driver)
 
     # Extract full description
     job_description_div = soup.find('div', class_='job_description')
@@ -189,21 +192,7 @@ def extract_job_details(driver, existing_jobs, job, num_additional_links, logger
                 WebDriverWait(driver, 20).until(
                     EC.presence_of_element_located((By.TAG_NAME, "body"))
                 )
-
-                # Scroll to the bottom of the page
-                last_height = driver.execute_script(
-                    "return document.body.scrollHeight")
-                while True:
-                    driver.execute_script(
-                        "window.scrollTo(0, document.body.scrollHeight);")
-                    time.sleep(2)
-                    new_height = driver.execute_script(
-                        "return document.body.scrollHeight")
-                    if new_height == last_height:
-                        break
-                    last_height = new_height
-
-                link_soup = BeautifulSoup(driver.page_source, 'html.parser')
+                link_soup = fetch_page(driver)
                 link_text = clean_text(link_soup.get_text())
                 # Truncate to first 10000 characters to avoid overwhelming ChatGPT
                 additional_content.append(
