@@ -38,7 +38,7 @@ CRAJobHarvester is a Python-based tool designed to scrape and analyze job listin
 Run the script with the following command:
 
 ```
-python cra_job_crawler.py --csv output.csv --api_key your_openai_api_key --chromedriver /path/to/chromedriver
+python cra_job_crawler.py --csv output.csv --api_key your_openai_api_key --chromedriver /path/to/chromedriver --additional_links 5 --log_level INFO
 ```
 
 ### Command-line Arguments
@@ -47,8 +47,41 @@ python cra_job_crawler.py --csv output.csv --api_key your_openai_api_key --chrom
 - `--api_key`: Your OpenAI API key
 - `--model`: OpenAI model to use (choices: gpt-3.5-turbo, gpt-4, gpt-4o; default: gpt-3.5-turbo)
 - `--chromedriver`: Path to your ChromeDriver executable (required)
-- `--additional_links`: Number of additional links to process per job listing (default: 0)
+- `--additional_links`: Number of additional links to process per job listing (default: 3)
 - `--max_attempts`: Maximum number of attempts for parsing job details (default: 3)
+- `--log_level`: Logging level (choices: DEBUG, INFO, WARNING, ERROR, CRITICAL; default: INFO)
+
+### Output
+
+The script generates a CSV file containing the following information for each job listing:
+
+- Company/University
+- Department
+- Position (Assistant Professor, Associate Professor, etc.)
+- Hiring Areas
+- Location
+- Number of Positions
+- Submission Deadline
+- Number of Recommendation Letters
+- Expiration Date
+- CRA Link
+- Crawl Time
+- Posted Date
+- Additional Links
+- Additional Comments
+
+## Logging
+
+The script uses a custom logging setup with colored output for console logs and detailed logs saved to a file. The log file (cra_job_crawler.log) uses a rotating file handler to manage log size.
+
+## Troubleshooting
+
+If you encounter any issues:
+
+1. Check that your Chrome WebDriver is compatible with your Chrome browser version.
+2. Ensure your OpenAI API key is correctly set and has sufficient credits.
+3. Review the log file for detailed error messages.
+4. Adjust the log level for more detailed output if needed.
 
 ## Note on OpenAI Models
 
