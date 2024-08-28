@@ -1,8 +1,12 @@
 import json
 import jsonschema
 import re
-import requests
 import time
+import logging
+import os
+import csv
+import argparse
+from logging.handlers import RotatingFileHandler
 from urllib.parse import urljoin
 from datetime import datetime
 from selenium import webdriver
@@ -13,9 +17,68 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
 from openai import OpenAI
-import os
-import csv
-import argparse
+from colorama import init, Fore, Back, Style
+
+# Initialize colorama
+init(autoreset=True)
+
+
+class ColoredFormatter(logging.Formatter):
+    """Custom formatter to add colors and component names to log messages"""
+
+    COLORS = {
+        'DEBUG': Fore.CYAN,
+        'INFO': Fore.GREEN,
+        'WARNING': Fore.YELLOW,
+        'ERROR': Fore.RED,
+        'CRITICAL': Fore.RED + Back.WHITE + Style.BRIGHT,
+    }
+
+    def format(self, record):
+        log_message = super().format(record)
+        component = record.name
+        line_num = record.lineno
+        colored_component = f"{Fore.MAGENTA}{component}{Style.RESET_ALL}"
+        colored_line_num = f"{Fore.BLUE}:{line_num}{Style.RESET_ALL}"
+        return f"{self.COLORS.get(record.levelname, '')}{log_message} [{colored_component}{colored_line_num}]{Style.RESET_ALL}"
+
+
+def setup_logging(log_file='cra_job_crawler.log', log_level=logging.DEBUG):
+    """Set up logging to file and console."""
+    # Set up the root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+
+    # File formatter (without colors)
+    file_formatter = logging.Formatter(
+        '%(asctime)s - %(name)s:%(lineno)d - %(levelname)s - %(message)s')
+
+    # Console formatter (with colors, component names, and line numbers)
+    console_formatter = ColoredFormatter(
+        '%(asctime)s - %(levelname)s - %(message)s')
+
+    # File handler (with rotation)
+    file_handler = RotatingFileHandler(
+        log_file, maxBytes=10*1024*1024, backupCount=5)
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(file_formatter)
+
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(log_level)
+    console_handler.setFormatter(console_formatter)
+
+    # Add handlers to logger
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+
+    # Suppress logs from dependencies
+    for module in ['selenium', 'urllib3', 'requests', 'openai', 'bs4', 'httpx', 'httpcore']:
+        logging.getLogger(module).setLevel(logging.WARNING)
+
+    # Create and return a logger for this script
+    logger = logging.getLogger('cra_job_crawler')
+    return logger
 
 
 def setup_cli():
@@ -28,9 +91,13 @@ def setup_cli():
     parser.add_argument("--chromedriver", required=True,
                         help="Path to chromedriver")
     parser.add_argument("--additional_links", type=int,
-                        default=0, help="Number of additional links to process")
+                        default=3, help="Number of additional links to process")
     parser.add_argument("--max_attempts", type=int, default=3,
                         help="Maximum number of attempts for parsing job details")
+    parser.add_argument("--log_level", default="INFO",
+                        choices=["DEBUG", "INFO",
+                                 "WARNING", "ERROR", "CRITICAL"],
+                        help="Set the logging level")
     return parser.parse_args()
 
 
@@ -75,7 +142,7 @@ def fetch_cra_jobs(driver):
     return soup.find_all('li', class_='job_listing')
 
 
-def extract_job_details(driver, job, num_additional_links):
+def extract_job_details(driver, existing_jobs, job, num_additional_links, logger):
     """Extract basic details from a job listing and fetch full description."""
     title = job.find('h3').text.strip()
     link = job.find('a')['href']
@@ -83,6 +150,11 @@ def extract_job_details(driver, job, num_additional_links):
     location = job.find('div', class_='location').text.replace(
         company, "").strip()
     job_type = job.find('li', class_='job-type').text.strip()
+
+    title = f"{company} ({location}): {title}"
+    if title in existing_jobs:
+        logger.info(f"Skipping duplicate job: {title}")
+        return None, None, None, None, None, None, None, None
 
     # Fetch the detailed job page
     driver.get(link)
@@ -102,26 +174,45 @@ def extract_job_details(driver, job, num_additional_links):
     links = job_description_div.find_all('a', href=True)
     for i, a in enumerate(links):
         href = a['href']
+        logger.debug(f"Processing additional link {i+1}: {href}")
+        if href.startswith('mailto:'):
+            logger.info(f"Skipping mailto link: {href}")
+            continue
         if not href.startswith('http'):
             href = urljoin(link, href)
         additional_links.append(href)
 
-        if i < num_additional_links:  # Limit to first n links to avoid overloading
+        # Limit to first n links to avoid overloading
+        if len(additional_links) < num_additional_links:
             try:
-                response = requests.get(href, timeout=10)
-                if response.status_code == 200:
-                    link_soup = BeautifulSoup(response.text, 'html.parser')
-                    # Extract text from the body, removing scripts and styles
-                    for script in link_soup(["script", "style"]):
-                        script.decompose()
-                    link_text = clean_text(link_soup.get_text())
-                    # Truncate to first 1000 characters to avoid overwhelming ChatGPT
-                    additional_content.append(
-                        f"Additional content from {href}:\n{link_text[:1000]}...")
-            except Exception as e:
-                print(f"Error fetching content from {href}: {e}")
+                driver.get(href)
+                WebDriverWait(driver, 20).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                )
 
-        # Combine original description with additional content
+                # Scroll to the bottom of the page
+                last_height = driver.execute_script(
+                    "return document.body.scrollHeight")
+                while True:
+                    driver.execute_script(
+                        "window.scrollTo(0, document.body.scrollHeight);")
+                    time.sleep(2)
+                    new_height = driver.execute_script(
+                        "return document.body.scrollHeight")
+                    if new_height == last_height:
+                        break
+                    last_height = new_height
+
+                link_soup = BeautifulSoup(driver.page_source, 'html.parser')
+                link_text = clean_text(link_soup.get_text())
+                # Truncate to first 10000 characters to avoid overwhelming ChatGPT
+                additional_content.append(
+                    f"    Additional content from {href}:\n    {link_text[:10000]}...")
+                logger.debug(f"Successfully extracted content from {href}")
+            except Exception as e:
+                logger.error(f"Error fetching content from {href}: {e}")
+
+    # Combine original description with additional content
     full_content = full_description + "\n\n" + "\n\n".join(additional_content)
 
     # Extract posted date and expiration date
@@ -130,9 +221,10 @@ def extract_job_details(driver, job, num_additional_links):
     expiration_date = meta.find_all(
         'li', class_='date-posted')[1].text.replace("Expires on:", "").strip()
 
+    logger.info(f"Successfully extracted details for job: {title} ({company})")
     time.sleep(1)  # Be nice to the server
 
-    return title, link, company, location, job_type, full_content, posted_date, expiration_date, additional_links
+    return title, link, location, job_type, full_content, posted_date, expiration_date, additional_links
 
 
 def query_openai(prompt, model):
@@ -148,7 +240,7 @@ def query_openai(prompt, model):
     return response.choices[0].message.content
 
 
-def parse_job_details(title, details, max_attempts, model):
+def parse_job_details(title, details, max_attempts, model, logger):
     """Parse job details using OpenAI API with structured format and JSON output."""
     # flake8: noqa: E501
     prompt = f"""
@@ -166,23 +258,23 @@ def parse_job_details(title, details, max_attempts, model):
     2. Department that is hiring:
     Extract the full department name
 
-    3. Position they are hiring:
+    3. Position(s) Hiring:
     Choose one or more appropriate options, separated by commas: Postdoc, Assistant Professor, Associate Professor, Full Professor, Lecturer
 
     4. Submission deadline:
     Format as YYYY-MM-DD. If not specified, write "Not specified"
 
     5. Hiring areas:
-    List the main areas, prioritizing and choosing from: Security, Software Engineering, Programming Languages, AI, Machine Learning, Data Science, Theory, Systems, Networks, Human-Computer Interaction, Graphics, Robotics. If general or not specified, write "All areas"
+    List the main areas of hiring, prioritizing and selecting from the following options: Security, Software Engineering, Programming Languages, AI, Machine Learning, Data Science, Theory, Systems, Networks, Human-Computer Interaction, Graphics, Robotics. For areas not covered by these options, use "Others". If the areas are general or not specified, write "All areas"
 
-    6. Number of recommendation letters required:
+    6. Number of Recommendation Letters or References Required:
     Provide the number only. If not specified, write "Not specified"
 
     7. Number of positions:
     Provide the number only. If not specified, write "Not specified"
 
     8. Additional important comments:
-    Summarize any other crucial information
+    Summarize any other crucial or noteworthy information relevant to the job listing
 
     Return a JSON object with the following structure:
     {{
@@ -216,14 +308,18 @@ def parse_job_details(title, details, max_attempts, model):
 
     for attempt in range(max_attempts):
         try:
+            logger.debug(
+                f"Attempting to parse job details (attempt {attempt+1}/{max_attempts})")
+            logger.debug(f"Prompt to {model}: {prompt}")
             response = query_openai(prompt, model)
+            logger.debug(f"Response from {model}: {response}")
             parsed_json = json.loads(response)
             jsonschema.validate(instance=parsed_json, schema=schema)
             return parsed_json
         except (json.JSONDecodeError, jsonschema.exceptions.ValidationError) as e:
             if attempt == max_attempts - 1:
-                print(
-                    f"All attempts ({max_attempts}) failed. Returning default values.")
+                logger.error(
+                    f"All attempts ({max_attempts}) failed on {title}. Returning default values.")
                 return {
                     "university_name": "Not specified",
                     "department": "Not specified",
@@ -250,31 +346,34 @@ def load_existing_jobs(csv_path):
 
 def main():
     args = setup_cli()
+    logger = setup_logging(log_level=getattr(logging, args.log_level))
+    logger.info("Starting CRA Job Crawler")
 
     if args.api_key:
         os.environ["OPENAI_API_KEY"] = args.api_key
 
     existing_jobs = load_existing_jobs(args.csv)
+    logger.info(f"Loaded {len(existing_jobs)} existing jobs from {args.csv}")
 
     driver = setup_driver(args.chromedriver)
     try:
         jobs = fetch_cra_jobs(driver)
         if len(jobs) == 0:
-            print("Crawling failed. No job listings found. Please try again later.")
+            logger.error(
+                "Crawling failed. No job listings found. Please try again later.")
             raise Exception("No job listings found")
+
+        logger.info(f"Found {len(jobs)} job listings on CRA website")
 
         for job in jobs:
             crawl_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            title, link, company, location, job_type, full_content, posted_date, expiration_date, additional_links = extract_job_details(
-                driver, job, args.additional_links)
-            title = f"{company} ({location}): {title}"
-
-            if title in existing_jobs:
-                print(f"Skipping duplicate job: {title}")
+            title, link, location, job_type, full_content, posted_date, expiration_date, additional_links = extract_job_details(
+                driver, existing_jobs, job, args.additional_links, logger)
+            if title is None:
                 continue
 
             parsed_details = parse_job_details(
-                title, full_content, args.max_attempts, args.model)
+                title, full_content, args.max_attempts, args.model, logger)
 
             job_info = {
                 "Crawl Time": crawl_time,
@@ -296,7 +395,7 @@ def main():
             }
 
             existing_jobs[title] = job_info
-            print(f"Scraped job: {title}")
+            logger.info(f"Scraped job: {title}")
 
         # Ensure all jobs have the same keys
         all_keys = set().union(*(d.keys() for d in existing_jobs.values()))
@@ -331,17 +430,22 @@ def main():
                 ordered_fieldnames.append(key)
 
        # Write results to CSV
+        logger.info(f"Writing results to {args.csv}")
         with open(args.csv, 'w', newline='', encoding='utf-8') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=ordered_fieldnames)
             writer.writeheader()
             for job_info in existing_jobs.values():
                 writer.writerow(job_info)
 
-        print(
-            f"Scraped {len(existing_jobs)} job listings. Results saved to cra_job_listings.csv")
+        logger.info(
+            f"Scraped {len(existing_jobs)} job listings. Results saved to {args.csv}")
+
+    except Exception as e:
+        logger.exception(f"An error occurred during execution: {e}")
 
     finally:
         driver.quit()
+        logger.info("CRA Job Crawler finished execution")
 
 
 if __name__ == "__main__":

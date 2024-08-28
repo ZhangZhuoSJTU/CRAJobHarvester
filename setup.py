@@ -25,6 +25,7 @@ setup(
         "openai>=1.42.0",
         "requests>=2.32.3",
         "selenium>=4.23.1",
+        "colorama>=0.4.6",
     ],
     entry_points={
         'console_scripts': [
