@@ -15,6 +15,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from bs4 import BeautifulSoup
 from openai import OpenAI
 from colorama import init, Fore, Back, Style
@@ -95,8 +96,7 @@ def setup_cli():
     parser.add_argument("--max_attempts", type=int, default=3,
                         help="Maximum number of attempts for parsing job details")
     parser.add_argument("--log_level", default="INFO",
-                        choices=["DEBUG", "INFO",
-                                 "WARNING", "ERROR", "CRITICAL"],
+                        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
                         help="Set the logging level")
     return parser.parse_args()
 
@@ -116,24 +116,40 @@ def setup_driver(chromedriver_path):
     return webdriver.Chrome(service=service, options=chrome_options)
 
 
-def fetch_page(driver):
-    """Fetch a page using Selenium."""
-    # Scroll to load all job listings
-    last_height = driver.execute_script("return document.body.scrollHeight")
-    while True:
-        driver.execute_script(
-            "window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(2)
+def fetch_page(driver, logger):
+    """Fetch a page using Selenium with nested loops for scrolling and loading more listings."""
+    while True:  # Outer loop for scrolling
+        last_height = driver.execute_script("return document.body.scrollHeight")
+        
+        while True:  # Inner loop for clicking "Load more listings"
+            # Scroll down to bottom
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)  # Wait for the page to load
+
+            try:
+                load_more_button = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.CLASS_NAME, "load_more_jobs"))
+                )
+                driver.execute_script("arguments[0].click();", load_more_button)
+                logger.info("Clicked 'Load more listings' button")
+                time.sleep(2)  # Wait for new listings to load
+            except (TimeoutException, NoSuchElementException):
+                logger.info("No more 'Load more listings' button found. Moving to next scroll.")
+                break  # Break the inner loop to move to the next scroll
+
+        # Check if the page height has changed
         new_height = driver.execute_script("return document.body.scrollHeight")
         if new_height == last_height:
-            break
-        last_height = new_height
+            logger.info("Reached the bottom of the page, no more content to load.")
+            break  # Break the outer loop
+        
+        logger.info("Page height changed, continuing to scroll.")
 
     page_source = driver.page_source
     return BeautifulSoup(page_source, 'html.parser')
 
 
-def fetch_cra_jobs(driver):
+def fetch_cra_jobs(driver, logger):
     """Fetch job listings from CRA website using Selenium."""
     url = "https://cra.org/ads/"
     driver.get(url)
@@ -142,7 +158,7 @@ def fetch_cra_jobs(driver):
     WebDriverWait(driver, 20).until(
         EC.presence_of_element_located((By.CLASS_NAME, "job_listings"))
     )
-    soup = fetch_page(driver)
+    soup = fetch_page(driver, logger)
     return soup.find_all('li', class_='job_listing')
 
 
@@ -165,7 +181,7 @@ def extract_job_details(driver, existing_jobs, job, num_additional_links, logger
     WebDriverWait(driver, 10).until(
         EC.presence_of_element_located((By.CLASS_NAME, "job_description"))
     )
-    soup = fetch_page(driver)
+    soup = fetch_page(driver, logger)
 
     # Extract full description
     job_description_div = soup.find('div', class_='job_description')
@@ -192,7 +208,7 @@ def extract_job_details(driver, existing_jobs, job, num_additional_links, logger
                 WebDriverWait(driver, 20).until(
                     EC.presence_of_element_located((By.TAG_NAME, "body"))
                 )
-                link_soup = fetch_page(driver)
+                link_soup = fetch_page(driver, logger)
                 link_text = clean_text(link_soup.get_text())
                 # Truncate to first 10000 characters to avoid overwhelming ChatGPT
                 additional_content.append(
@@ -346,7 +362,7 @@ def main():
 
     driver = setup_driver(args.chromedriver)
     try:
-        jobs = fetch_cra_jobs(driver)
+        jobs = fetch_cra_jobs(driver, logger)
         if len(jobs) == 0:
             logger.error(
                 "Crawling failed. No job listings found. Please try again later.")
