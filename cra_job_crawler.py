@@ -167,16 +167,15 @@ def extract_job_details(driver, existing_jobs, job, num_additional_links, logger
     title = job.find('h3').text.strip()
     link = job.find('a')['href']
     company = job.find('div', class_='location').find('strong').text.strip()
-    location = job.find('div', class_='location').text.replace(
-        company, "").strip()
+    location = job.find('div', class_='location').text.replace(company, "").strip()
     job_type = job.find('li', class_='job-type').text.strip()
 
-    title = f"{company} ({location}): {title}"
-    if title in existing_jobs:
-        logger.info(f"Skipping duplicate job: {title}")
-        return None, None, None, None, None, None, None, None
+    if link in existing_jobs:
+        logger.info(f"Skipping duplicate job: {link}")
+        return None
 
     # Fetch the detailed job page
+    logger.info(f"Fetching page: {link}")
     driver.get(link)
     WebDriverWait(driver, 10).until(
         EC.presence_of_element_located((By.CLASS_NAME, "job_description"))
@@ -204,6 +203,7 @@ def extract_job_details(driver, existing_jobs, job, num_additional_links, logger
         # Limit to first n links to avoid overloading
         if len(additional_links) < num_additional_links:
             try:
+                logger.info(f"Fetching additional content from: {href}")
                 driver.get(href)
                 WebDriverWait(driver, 20).until(
                     EC.presence_of_element_located((By.TAG_NAME, "body"))
@@ -223,13 +223,22 @@ def extract_job_details(driver, existing_jobs, job, num_additional_links, logger
     # Extract posted date and expiration date
     meta = soup.find('ul', class_='meta')
     posted_date = meta.find('li', class_='date-posted').text.strip()
-    expiration_date = meta.find_all(
-        'li', class_='date-posted')[1].text.replace("Expires on:", "").strip()
+    expiration_date = meta.find_all('li', class_='date-posted')[1].text.replace("Expires on:", "").strip()
 
     logger.info(f"Successfully extracted details for job: {title} ({company})")
     time.sleep(1)  # Be nice to the server
 
-    return title, link, location, job_type, full_content, posted_date, expiration_date, additional_links
+    return {
+        "title": title,
+        "link": link,
+        "company": company,
+        "location": location,
+        "job_type": job_type,
+        "full_content": full_content,
+        "posted_date": posted_date,
+        "expiration_date": expiration_date,
+        "additional_links": additional_links
+    }
 
 
 def query_openai(prompt, model):
@@ -245,77 +254,76 @@ def query_openai(prompt, model):
     return response.choices[0].message.content
 
 
-def parse_job_details(title, details, max_attempts, model, logger):
+def parse_job_details(job_info, max_attempts, model, logger):
     """Parse job details using OpenAI API with structured format and JSON output."""
-    # flake8: noqa: E501
+    title = job_info['title']
+    details = job_info['full_content']
     prompt = f"""
-    Analyze the following job listing title and details. Extract the requested information following the format and instructions carefully, then return the result as a JSON object.
-
-    Job title: {title}
-    Job listing details:
-    {details}
+    Analyze the following job listing details. Extract the requested information following the format and instructions carefully, then return the result as a JSON object.
 
     Follow these instructions for each field:
 
-    1. University or company name:
-    Extract the full name
-
-    2. Department that is hiring:
-    Extract the full department name
-
-    3. Position(s) Hiring:
-    Choose one or more appropriate options, separated by commas: Postdoc, Assistant Professor, Associate Professor, Full Professor, Lecturer
-
-    4. Submission deadline:
-    Format as YYYY-MM-DD. If not specified, write "Not specified"
-
-    5. Hiring areas:
-    List the main areas of hiring, prioritizing and selecting from the following options: Security, Software Engineering, Programming Languages, AI, Machine Learning, Data Science, Theory, Systems, Networks, Human-Computer Interaction, Graphics, Robotics. For areas not covered by these options, use "Others". If the areas are general or not specified, write "All areas"
-
-    6. Number of Recommendation Letters or References Required:
-    Provide the number only. If not specified, write "Not specified"
-
-    7. Number of positions:
-    Provide the number only. If not specified, write "Not specified"
-
-    8. Additional important comments:
-    Summarize any other crucial or noteworthy information relevant to the job listing
+    1. Institution: Extract the full name of the university or institution
+    2. Department: Extract the full department name
+    3. Location: Provide the city and state/country
+    4. Positions: Number of positions available (if not specified, use 1)
+    5. Field: List the main areas of hiring, prioritizing and selecting from the following options: Security, Software Engineering, Programming Languages, AI, Machine Learning, Data Science, Theory, Systems, Networks, Human-Computer Interaction, Graphics, Robotics. For areas not covered by these options, use "Others". If the areas are general or not specified, write "All Areas"
+    6. Preference: List any preferred specializations or focus areas within the main fields
+    7. Min. Rec. Letters: Minimum number of recommendation letters required (if not specified, use 3)
+    8. Max. Rec. Letters: Maximum number of recommendation letters allowed (if not specified, use -)
+    9. Review Starts: Date when application review begins (format as YYYY-MM-DD, if not specified, use "Opened")
+    10. Deadline: Application deadline (format as YYYY-MM-DD, if not specified, use "Open until filled")
+    11. Additional Material: List any required application materials besides cover letter, CV, research statements, teaching statements, diversity statements, and recommendation letters
+    12. Notes: Any other important information not covered by the above fields
 
     Return a JSON object with the following structure:
     {{
-        "university_name": "Answer for item 1",
+        "institution": "Answer for item 1",
         "department": "Answer for item 2",
-        "position": "Answer for item 3",
-        "submission_deadline": "Answer for item 4",
-        "hiring_areas": ["Area 1", "Area 2", ...],
-        "recommendation_letters": "Answer for item 6",
-        "positions_available": "Answer for item 7",
-        "additional_comments": "Answer for item 8"
+        "location": "Answer for item 3",
+        "positions": "Answer for item 4",
+        "field": "Answer for item 5",
+        "preference": "Answer for item 6",
+        "min_rec_letters": "Answer for item 7",
+        "max_rec_letters": "Answer for item 8",
+        "review_starts": "Answer for item 9",
+        "deadline": "Answer for item 10",
+        "additional_material": "Answer for item 11",
+        "notes": "Answer for item 12"
     }}
 
     Ensure all fields are present in the JSON, even if the information is not available (use null or appropriate default values in such cases).
+
+    ---
+
+    Job title: {title}
+
+    Job listing details:
+    {details}
     """
 
     schema = {
         "type": "object",
         "properties": {
-            "university_name": {"type": "string"},
+            "institution": {"type": "string"},
             "department": {"type": "string"},
-            "position": {"type": "string"},
-            "submission_deadline": {"type": "string"},
-            "hiring_areas": {"type": "array", "items": {"type": "string"}},
-            "recommendation_letters": {"type": ["string", "integer"]},
-            "positions_available": {"type": ["string", "integer"]},
-            "additional_comments": {"type": "string"}
+            "location": {"type": "string"},
+            "positions": {"type": ["string", "integer"]},
+            "field": {"type": "string"},
+            "preference": {"type": "string"},
+            "min_rec_letters": {"type": ["string", "integer"]},
+            "max_rec_letters": {"type": ["string", "integer"]},
+            "review_starts": {"type": "string"},
+            "deadline": {"type": "string"},
+            "additional_material": {"type": "string"},
+            "notes": {"type": "string"}
         },
-        "required": ["university_name", "department", "position", "submission_deadline", "hiring_areas", "recommendation_letters", "positions_available", "additional_comments"]
+        "required": ["institution", "department", "location", "positions", "field", "preference", "min_rec_letters", "max_rec_letters", "review_starts", "deadline", "additional_material", "notes"]
     }
 
     for attempt in range(max_attempts):
         try:
-            logger.debug(
-                f"Attempting to parse job details (attempt {attempt+1}/{max_attempts})")
-            logger.debug(f"Prompt to {model}: {prompt}")
+            logger.debug(f"Attempting to parse job details (attempt {attempt+1}/{max_attempts})")
             response = query_openai(prompt, model)
             logger.debug(f"Response from {model}: {response}")
             parsed_json = json.loads(response)
@@ -323,18 +331,22 @@ def parse_job_details(title, details, max_attempts, model, logger):
             return parsed_json
         except (json.JSONDecodeError, jsonschema.exceptions.ValidationError) as e:
             if attempt == max_attempts - 1:
-                logger.error(
-                    f"All attempts ({max_attempts}) failed on {title}. Returning default values.")
+                logger.error(f"All attempts ({max_attempts}) failed on {job_info['title']}. Returning default values.")
                 return {
-                    "university_name": "Not specified",
+                    "institution": "Not specified",
                     "department": "Not specified",
-                    "position": "Not specified",
-                    "submission_deadline": "Not specified",
-                    "hiring_areas": ["Not specified"],
-                    "recommendation_letters": "Not specified",
-                    "positions_available": 1,
-                    "additional_comments": "Failed to parse job details."
+                    "location": "Not specified",
+                    "positions": 1,
+                    "field": "Not specified",
+                    "preference": "Not specified",
+                    "min_rec_letters": 3,
+                    "max_rec_letters": "-",
+                    "review_starts": "Opened",
+                    "deadline": "Open until filled",
+                    "additional_material": "Not specified",
+                    "notes": "Failed to parse job details."
                 }
+
 
 
 def load_existing_jobs(csv_path):
@@ -343,11 +355,22 @@ def load_existing_jobs(csv_path):
         with open(csv_path, 'r', newline='', encoding='utf-8') as csvfile:
             reader = csv.DictReader(csvfile)
             for row in reader:
-                if row.get('Additional Comments') != "Failed to parse job details.":
-                    # Store the entire valid row, indexed by its title (or another unique field)
-                    existing_jobs[row.get('CRA ID', '')] = row
+                existing_jobs[row.get('Link', '')] = row
     return existing_jobs
 
+def write_job_to_csv(job_data, csv_path, fieldnames, logger):
+    """Write a single job to the CSV file."""
+    file_exists = os.path.isfile(csv_path)
+    
+    with open(csv_path, 'a', newline='', encoding='utf-8') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        
+        if not file_exists:
+            writer.writeheader()  # Write header if file doesn't exist
+        
+        writer.writerow(job_data)
+    
+    logger.info(f"Updated CSV with job: {job_data['Institution']} - {job_data['Department']}")
 
 def main():
     args = setup_cli()
@@ -360,90 +383,52 @@ def main():
     existing_jobs = load_existing_jobs(args.csv)
     logger.info(f"Loaded {len(existing_jobs)} existing jobs from {args.csv}")
 
+    fieldnames = [
+        "Institution", "Department", "Location", "Positions", "Field", "Preference",
+        "Min. Rec. Letters", "Max. Rec. Letters", "Review Starts", "Deadline",
+        "CS Rankings", "In List", "Link", "Additional Material", "Notes"
+    ]
+
     driver = setup_driver(args.chromedriver)
     try:
         jobs = fetch_cra_jobs(driver, logger)
         if len(jobs) == 0:
-            logger.error(
-                "Crawling failed. No job listings found. Please try again later.")
+            logger.error("Crawling failed. No job listings found. Please try again later.")
             raise Exception("No job listings found")
 
         logger.info(f"Found {len(jobs)} job listings on CRA website")
 
+        new_jobs_count = 0
         for job in jobs:
-            crawl_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            title, link, location, job_type, full_content, posted_date, expiration_date, additional_links = extract_job_details(
-                driver, existing_jobs, job, args.additional_links, logger)
-            if title is None:
+            job_info = extract_job_details(driver, existing_jobs, job, args.additional_links, logger)
+            if job_info is None:
                 continue
 
-            parsed_details = parse_job_details(
-                title, full_content, args.max_attempts, args.model, logger)
+            parsed_details = parse_job_details(job_info, args.max_attempts, args.model, logger)
 
-            job_info = {
-                "Crawl Time": crawl_time,
-                "Company/University": parsed_details["university_name"],
+            job_data = {
+                "Institution": parsed_details["institution"],
                 "Department": parsed_details["department"],
-                "Position": parsed_details["position"],
-                "Job Type": job_type,
-                "Location": location,
-                "Number of Positions": parsed_details["positions_available"],
-                "Hiring Areas": ", ".join(parsed_details["hiring_areas"]),
-                "Submission Deadline": parsed_details["submission_deadline"],
-                "Number of Recommendation Letters": parsed_details["recommendation_letters"],
-                "Posted Date": posted_date,
-                "Expiration Date": expiration_date,
-                "CRA Link": link,
-                "Additional Comments": parsed_details["additional_comments"],
-                "Additional Links": "\n".join(additional_links),
-                "CRA ID": title
+                "Location": parsed_details["location"],
+                "Positions": parsed_details["positions"],
+                "Field": parsed_details["field"],
+                "Preference": parsed_details["preference"],
+                "Min. Rec. Letters": parsed_details["min_rec_letters"],
+                "Max. Rec. Letters": parsed_details["max_rec_letters"],
+                "Review Starts": parsed_details["review_starts"],
+                "Deadline": parsed_details["deadline"],
+                "CS Rankings": "",
+                "In List": "",
+                "Link": job_info["link"],
+                "Additional Material": parsed_details["additional_material"],
+                "Notes": parsed_details["notes"]
             }
 
-            existing_jobs[title] = job_info
-            logger.info(f"Scraped job: {title}")
+            # Write the job to CSV immediately after processing
+            write_job_to_csv(job_data, args.csv, fieldnames, logger)
+            new_jobs_count += 1
 
-        # Ensure all jobs have the same keys
-        all_keys = set().union(*(d.keys() for d in existing_jobs.values()))
-        for job in existing_jobs.values():
-            for key in all_keys:
-                if key not in job:
-                    job[key] = "N/A"
-
-        # Define the order of columns
-        ordered_fieldnames = [
-            "Company/University",
-            "Department",
-            "Position",
-            "Hiring Areas",
-            "Location",
-            "Number of Positions",
-            "Submission Deadline",
-            "Number of Recommendation Letters",
-            "Expiration Date",
-            "CRA Link",
-            "Crawl Time",
-            "Posted Date",
-            "Job Type",
-            "Additional Links",
-            "Additional Comments",
-            "CRA ID"
-        ]
-
-        # Ensure all keys are included, even if not in our predefined order
-        for key in all_keys:
-            if key not in ordered_fieldnames:
-                ordered_fieldnames.append(key)
-
-       # Write results to CSV
-        logger.info(f"Writing results to {args.csv}")
-        with open(args.csv, 'w', newline='', encoding='utf-8') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=ordered_fieldnames)
-            writer.writeheader()
-            for job_info in existing_jobs.values():
-                writer.writerow(job_info)
-
-        logger.info(
-            f"Scraped {len(existing_jobs)} job listings. Results saved to {args.csv}")
+        logger.info(f"Scraped {new_jobs_count} new job listings. Results saved to {args.csv}")
 
     except Exception as e:
         logger.exception(f"An error occurred during execution: {e}")
