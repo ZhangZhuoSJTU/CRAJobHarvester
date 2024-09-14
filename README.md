@@ -19,7 +19,7 @@ CRAJobHarvester is a Python-based tool designed to scrape and analyze job listin
 
 1. Clone this repository:
    ```
-   git clone https://github.com/yourusername/CRAJobHarvester.git
+   git clone https://github.com/ZhangZhuoSJTU/CRAJobHarvester.git
    cd CRAJobHarvester
    ```
 
